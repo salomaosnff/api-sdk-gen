@@ -1,18 +1,12 @@
 import { OpenAPIV3_1 } from "openapi-types";
 
 export function pascalCase(str: string): string {
-  return str
-    .replace(/(^\w|-\w)/g, clearAndUpper)
-    .replace(/_/g, '');
-}
-
-function clearAndUpper(text: string): string {
-  return text.replace(/-/, '').toUpperCase();
+  return str.replace(/(^|[-_])(\w)/g, (_, __, c) => c.toUpperCase());
 }
 
 export function resolveSchema(ref: string): string {
   const parts = ref.split('#/components/schemas/');
-  return pascalCase(parts[1]);
+  return pascalCase(parts[1] || parts[0]);
 }
 
 export function jsonPointer(path: string, json: any): any {

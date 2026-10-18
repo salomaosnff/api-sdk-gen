@@ -18,7 +18,30 @@ const jsonSchemaTags: Array<keyof OpenAPIV3_1.SchemaObject> = [
   'pattern',
   'format',
   'example',
-]
+];
+
+const standardFormatsWithRedundantPatterns = new Set([
+  'date',
+  'date-time',
+  'uuid',
+  'email',
+  'ipv4',
+  'ipv6',
+  'uri',
+  'url',
+]);
+
+function shouldIgnorePattern(schema: any): boolean {
+  const format = schema.format;
+  if (format && standardFormatsWithRedundantPatterns.has(format)) {
+    return true;
+  }
+  const subFormats = (schema.oneOf || schema.anyOf)?.map((s: any) => s?.format).filter(Boolean);
+  if (subFormats && subFormats.some((f: string) => standardFormatsWithRedundantPatterns.has(f))) {
+    return true;
+  }
+  return false;
+}
 
 
 function createInterfaceModel(doc: OpenAPIV3_1.Document, file: SourceFile, name: string, schema: OpenAPIV3_1.NonArraySchemaObject) {
@@ -26,8 +49,8 @@ function createInterfaceModel(doc: OpenAPIV3_1.Document, file: SourceFile, name:
     file.addTypeAlias({
       name: pascalCase(name),
       isExported: true,
-      type: '{}',
-    })
+      type: schema.additionalProperties ? 'Record<string, unknown>' : '{}',
+    });
     return;
   }
 
@@ -54,9 +77,9 @@ function createInterfaceModel(doc: OpenAPIV3_1.Document, file: SourceFile, name:
   }
 }
 
-function generateSchemaDocs(schema: OpenAPIV3_1.SchemaObject, doc: OpenAPIV3_1.Document) {
+function generateSchemaDocs(schema: OpenAPIV3_1.SchemaObject | OpenAPIV3_1.ReferenceObject, doc: OpenAPIV3_1.Document) {
   const jsdoc: OptionalKind<JSDocStructure> = {
-    description: schema.description || '',
+    description: (schema as any).description || '',
     tags: []
   }
 
@@ -72,6 +95,10 @@ function generateSchemaDocs(schema: OpenAPIV3_1.SchemaObject, doc: OpenAPIV3_1.D
   }
 
   for (const tagName of jsonSchemaTags) {
+    if (tagName === 'pattern' && shouldIgnorePattern(schema)) {
+      continue;
+    }
+
     const value = (schema as any)[tagName];
 
     if (value !== undefined) {
@@ -79,6 +106,16 @@ function generateSchemaDocs(schema: OpenAPIV3_1.SchemaObject, doc: OpenAPIV3_1.D
         tagName: tagName,
         text: String(value),
       });
+    } else if (tagName === 'format') {
+      const subFormats = ((schema as any).oneOf || (schema as any).anyOf)
+        ?.map((sub: any) => sub?.format)
+        .filter(Boolean);
+      if (subFormats && subFormats.length > 0) {
+        jsdoc.tags?.push({
+          tagName: 'format',
+          text: Array.from(new Set(subFormats)).join(' | '),
+        });
+      }
     }
   }
 
@@ -99,11 +136,7 @@ function generatePropertySignature(doc: OpenAPIV3_1.Document, propName: string, 
 }
 
 export function createModel(doc: OpenAPIV3_1.Document, file: SourceFile, name: string, schema: OpenAPIV3_1.NonArraySchemaObject | OpenAPIV3_1.ReferenceObject) {
-  if ('$ref' in schema) {
-    return;
-  }
-
-  if (schema.type === 'object' && schema.properties) {
+  if (!('$ref' in schema) && (schema.type === 'object' || (!schema.type && schema.properties)) && schema.properties) {
     createInterfaceModel(doc, file, name, schema);
     return;
   }
@@ -118,14 +151,44 @@ export function createModel(doc: OpenAPIV3_1.Document, file: SourceFile, name: s
   })
 }
 
+function findReferencedSchemas(obj: any, refs: Set<string> = new Set()): Set<string> {
+  if (!obj || typeof obj !== 'object') return refs;
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === '$ref' && typeof v === 'string') {
+      const parts = v.split('#/components/schemas/');
+      if (parts.length > 1 && parts[1]) {
+        refs.add(parts[1]);
+      }
+    } else {
+      findReferencedSchemas(v, refs);
+    }
+  }
+  return refs;
+}
+
 export async function generateModels(file: SourceFile, config: Config, doc: OpenAPIV3_1.Document) {
   const schemas = doc?.components?.schemas;
 
-  if (!schemas) {
-    return;
+  if (schemas) {
+    for (const [schemaName, schema] of Object.entries(schemas)) {
+      createModel(doc, file, schemaName, schema as any);
+    }
   }
 
-  for (const [schemaName, schema] of Object.entries(schemas)) {
-    createModel(doc, file, schemaName, schema as any);
+  const referencedSchemas = findReferencedSchemas(doc);
+  for (const refName of referencedSchemas) {
+    const pascalName = pascalCase(refName);
+    if (!file.getTypeAlias(pascalName) && !file.getInterface(pascalName)) {
+      file.addTypeAlias({
+        name: pascalName,
+        isExported: true,
+        type: 'Record<string, unknown>',
+        docs: [
+          {
+            description: `Aviso: Este schema não existe ou não foi declarado na especificação OpenAPI ('#/components/schemas/${refName}').\nGerado automaticamente como fallback para evitar quebras de referência e erros de compilação.`,
+          },
+        ],
+      });
+    }
   }
 }

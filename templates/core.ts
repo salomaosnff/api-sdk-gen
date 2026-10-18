@@ -27,5 +27,16 @@ type Pretty<T> = {
   [K in keyof T]: T[K];
 };
 
-export type QueryParams<Api extends ApiDoc, Path extends keyof Api, Method extends keyof Api[Path]> = Api[Path][Method] extends { parameters: infer P } ? P : never
-export type ResponseStatus<Api extends ApiDoc, Path extends keyof Api, Method extends keyof Api[Path], Status extends keyof Api[Path][Method]['responses']> = Api[Path][Method]['responses'][Status]
+export type QueryParams<Api extends ApiDoc, Path extends keyof Api, Method extends keyof Api[Path]> = Api[Path][Method] extends { parameters: infer P } ? P : never;
+export type ResponseStatus<
+  Api extends ApiDoc,
+  Path extends keyof Api,
+  Method extends keyof Api[Path],
+  Status extends Api[Path][Method] extends { responses: Record<string | number, any> }
+    ? keyof Api[Path][Method]['responses']
+    : never
+> = Api[Path][Method] extends { responses: infer R }
+  ? Status extends keyof R
+    ? R[Status]
+    : never
+  : never;

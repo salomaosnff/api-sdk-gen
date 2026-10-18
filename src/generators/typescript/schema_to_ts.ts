@@ -1,6 +1,6 @@
 import { OpenAPIV3_1 } from "openapi-types";
 import { resolveSchema } from "./util";
-import { WriterFunction } from "ts-morph";
+import { CodeBlockWriter, WriterFunction } from "ts-morph";
 
 export function schemaToTypeLiteral(
   schema: OpenAPIV3_1.SchemaObject | OpenAPIV3_1.ReferenceObject,
@@ -14,34 +14,84 @@ export function schemaToTypeLiteral(
       writer.write(
         schema.enum.map((value) => JSON.stringify(value)).join(" | "),
       );
+    } else if (schema.allOf && schema.allOf.length > 0) {
+      const uniqueTypes = new Set<string>();
+      for (const subSchema of schema.allOf) {
+        const subWriter = new CodeBlockWriter();
+        schemaToTypeLiteral(subSchema, doc, refPrefix)(subWriter);
+        const str = subWriter.toString().trim();
+        if (str) uniqueTypes.add(str);
+      }
+      const typesArray = Array.from(uniqueTypes);
+      if (typesArray.length > 1) {
+        writer.write("(");
+        writer.write(typesArray.join(" & "));
+        writer.write(")");
+      } else if (typesArray.length === 1) {
+        writer.write(typesArray[0]);
+      } else {
+        writer.write("unknown");
+      }
     } else if (schema.anyOf || schema.oneOf) {
-      (schema.anyOf || schema.oneOf)?.forEach((subSchema, index) => {
-        if (index > 0) {
-          writer.write(" | ");
+      const items = schema.anyOf || schema.oneOf;
+      if (items && items.length > 0) {
+        const uniqueTypes = new Set<string>();
+        for (const subSchema of items) {
+          const subWriter = new CodeBlockWriter();
+          schemaToTypeLiteral(subSchema, doc, refPrefix)(subWriter);
+          const str = subWriter.toString().trim();
+          if (str) uniqueTypes.add(str);
         }
-        schemaToTypeLiteral(subSchema, doc, refPrefix)(writer);
-      });
+        const typesArray = Array.from(uniqueTypes);
+        if (typesArray.length > 1) {
+          writer.write("(");
+          writer.write(typesArray.join(" | "));
+          writer.write(")");
+        } else if (typesArray.length === 1) {
+          writer.write(typesArray[0]);
+        } else {
+          writer.write("unknown");
+        }
+      }
+    } else if (schema.type === "object" || (!schema.type && schema.properties)) {
+      const properties = schema.properties || {};
+      const propEntries = Object.entries(properties);
+
+      if (propEntries.length === 0) {
+        if (
+          schema.additionalProperties &&
+          typeof schema.additionalProperties === "object" &&
+          Object.keys(schema.additionalProperties).length > 0
+        ) {
+          writer.write("Record<string, ");
+          schemaToTypeLiteral(schema.additionalProperties as any, doc, refPrefix)(writer);
+          writer.write(">");
+        } else {
+          writer.write("Record<string, unknown>");
+        }
+      } else {
+        const requiredProps = new Set(schema.required || []);
+        writer.write("{").newLine();
+        for (const [propName, propSchema] of propEntries) {
+          writer.indent(() => {
+            writer.write(propName);
+            if (!requiredProps.has(propName)) {
+              writer.write("?");
+            }
+            writer.write(": ");
+            schemaToTypeLiteral(propSchema, doc, refPrefix)(writer);
+            writer.write(";").newLine();
+          });
+        }
+        if (schema.additionalProperties) {
+          writer.indent(() => {
+            writer.write("[k: string]: unknown;").newLine();
+          });
+        }
+        writer.write("}");
+      }
     } else if (schema.type) {
       switch (schema.type) {
-        case "object": {
-          const requiredProps = new Set(schema.required || []);
-          writer.write("{").newLine();
-          for (const [propName, propSchema] of Object.entries(
-            schema.properties || {},
-          )) {
-            writer.indent(() => {
-              writer.write(propName);
-              if (!requiredProps.has(propName)) {
-                writer.write("?");
-              }
-              writer.write(": ");
-              schemaToTypeLiteral(propSchema, doc, refPrefix)(writer);
-              writer.write(";").newLine();
-            });
-          }
-          writer.write("}");
-          break;
-        }
         case "array":
           if (Array.isArray(schema.items)) {
             writer.write("[");
